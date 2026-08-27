@@ -105,18 +105,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 <body>
 <div class="ambient"></div>
 <div class="app">
-  <header class="header">
-    <div class="logo"><div class="logo-icon">🎣</div><span>Прогноз клёва</span></div>
-  </header>
+  <header class="header"><div class="logo"><div class="logo-icon">🎣</div><span>Прогноз клёва</span></div></header>
   <div class="search-box">
     <div class="search-input-wrap">
       <input type="text" class="search-input" id="cityInput" placeholder="Введите город..." autocomplete="off">
-      <button class="search-btn" id="searchBtn" title="Найти" aria-label="Найти">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-      </button>
-      <button class="geo-btn" id="geoBtn" title="Моё местоположение" aria-label="Моё местоположение">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
-      </button>
+      <button class="search-btn" id="searchBtn" title="Найти" aria-label="Найти"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></button>
+      <button class="geo-btn" id="geoBtn" title="Моё местоположение" aria-label="Моё местоположение"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg></button>
     </div>
     <div class="autocomplete" id="autocomplete"></div>
   </div>
@@ -150,271 +144,375 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 /**
  * Fishing Forecast PWA — inline build
  * Hybrid solunar-weather model per methodology v2
+ * Astronomy: SunCalc algorithms (accurate)
  */
 
-let currentLat=55.7558,currentLon=37.6173,currentCity='Москва',weatherData=null,selectedDay=0,debounceTimer=null;
-const $=id=>document.getElementById(id);
+// ==================== CALIBRATION CONSTANTS ====================
+const BASE_SCORE = 25;          // База вне периода (методология: экспертная оценка)
+const AMP_BIG = 40;             // Амплитуда большого периода
+const AMP_SMALL = 25;           // Амплитуда малого периода
+const OVERLAP_WINDOW = 1.0;     // Δ_допуск в часах
+const K_PHASE_MIN = 0.8;        // Минимум K_фазы (четверти)
+const K_PHASE_MAX = 1.2;        // Максимум K_фазы (ново-/полнолуние)
 
-/* ---------- ASTRONOMY ---------- */
-function toJulian(d){return d.getTime()/864e5-.5+2440587.5}
-function sunPosition(jd){
-  const n=jd-2451545,L=(280.460+.9856474*n)%360,g=((357.528+.9856003*n)%360)*Math.PI/180;
-  const lambda=(L+1.915*Math.sin(g)+.02*Math.sin(2*g))*Math.PI/180;
-  const epsilon=(23.439-4e-7*n)*Math.PI/180;
-  return{ra:Math.atan2(Math.cos(epsilon)*Math.sin(lambda),Math.cos(lambda)),dec:Math.asin(Math.sin(epsilon)*Math.sin(lambda))};
+// ==================== STATE ====================
+let currentLat = 55.7558, currentLon = 37.6173, currentCity = 'Москва';
+let weatherData = null, selectedDay = 0, debounceTimer = null;
+const $ = id => document.getElementById(id);
+
+// ==================== SUNCALC ASTRONOMY ====================
+const PI = Math.PI, sin = Math.sin, cos = Math.cos, tan = Math.tan, asin = Math.asin, atan2 = Math.atan2, acos = Math.acos;
+const RAD = PI / 180;
+const J2000 = 2451545.0;
+
+function toJulian(date) { return date.getTime() / 86400000 - 0.5 + 2440587.5; }
+function fromJulian(j) { return new Date((j + 0.5 - 2440587.5) * 86400000); }
+function toDays(date) { return toJulian(date) - J2000; }
+
+function rightAscension(l, b) {
+  const e = RAD * 23.4397;
+  return atan2(sin(l) * cos(e) - tan(b) * sin(e), cos(l));
 }
-function moonPosition(jd){
-  const T=(jd-2451545)/36525,Lp=(218.316+481267.881*T)%360,M=((134.963+477198.867*T)%360)*Math.PI/180,D=((297.850+445267.112*T)%360)*Math.PI/180,F=((93.272+483202.018*T)%360)*Math.PI/180;
-  const lon=(Lp+6.289*Math.sin(M)+1.274*Math.sin(2*D-M)+.658*Math.sin(2*D)+.214*Math.sin(2*M)-.186*Math.sin(D)-.114*Math.sin(2*F))*Math.PI/180;
-  const lat=(5.128*Math.sin(F)+.281*Math.sin(M+F)+.278*Math.sin(M-F)+.173*Math.sin(2*D-F))*Math.PI/180;
-  const ra=Math.atan2(Math.sin(lon)*Math.cos(23.4397*Math.PI/180)-Math.tan(lat)*Math.sin(23.4397*Math.PI/180),Math.cos(lon));
-  const dec=Math.asin(Math.sin(lat)*Math.cos(23.4397*Math.PI/180)+Math.cos(lat)*Math.sin(23.4397*Math.PI/180)*Math.sin(lon));
-  return{ra,dec,lon:lon*180/Math.PI};
+function declination(l, b) {
+  const e = RAD * 23.4397;
+  return asin(sin(b) * cos(e) + cos(b) * sin(e) * sin(l));
 }
-function hourAngle(jd,lon,ra){
-  const gmst=(18.697374558+24.06570982441908*(jd-2451545))%24;
-  const lst=gmst+lon/15;
-  return((lst*15*Math.PI/180-ra)+Math.PI)%(2*Math.PI)-Math.PI;
+function siderealTime(d, lw) {
+  return RAD * (280.16 + 360.9856235 * d) - lw;
 }
-function riseSetTransit(jd,lat,lon,dec,ra,h0){
-  const H0=Math.acos(Math.max(-1,Math.min(1,(Math.sin(h0)-Math.sin(lat)*Math.sin(dec))/(Math.cos(lat)*Math.cos(dec)))));
-  const transit=(ra-hourAngle(jd,lon,0)+lon)/(2*Math.PI)*24;
-  return{rise:transit-H0/(2*Math.PI)*24,transit,set:transit+H0/(2*Math.PI)*24};
+function solarMeanAnomaly(d) {
+  return RAD * (357.5291 + 0.98560028 * d);
 }
-function getMoonTimes(date,lat,lon){
-  const jd0=Math.floor(toJulian(date))-.5,times=[];
-  for(let d=-1;d<=1;d++){
-    const jd=jd0+d,mp=moonPosition(jd),h0=-.00989;
-    const r=riseSetTransit(jd,lat*Math.PI/180,lon*Math.PI/180,mp.dec,mp.ra,h0);
-    ['rise','transit','set'].forEach(k=>{const t=r[k]+d*24;if(t>=0&&t<=24)times.push({type:k==='transit'?'upper':k,time:t,jd:jd+t/24})});
+function eclipticLongitude(M) {
+  const C = RAD * (1.9148 * sin(M) + 0.02 * sin(2 * M) + 0.0003 * sin(3 * M));
+  const P = RAD * 102.9372;
+  return M + C + P + PI;
+}
+function sunCoords(d) {
+  const M = solarMeanAnomaly(d);
+  const L = eclipticLongitude(M);
+  return { dec: declination(L, 0), ra: rightAscension(L, 0) };
+}
+function moonCoords(d) {
+  const L = RAD * (218.316 + 13.176396 * d);
+  const M = RAD * (134.963 + 13.064993 * d);
+  const F = RAD * (93.272 + 13.229350 * d);
+  const l = L + RAD * 6.289 * sin(M);
+  const b = RAD * 5.128 * sin(F);
+  const dt = 385001 - 20905 * cos(M);
+  return { ra: rightAscension(l, b), dec: declination(l, b), dist: dt };
+}
+function julianCycle(d, lw) {
+  return Math.round(d - lw / (2 * PI));
+}
+function approxTransit(Ht, lw, n) {
+  return J2000 + Ht + lw / (2 * PI) + n;
+}
+function solarTransitJ(ds, M, L) {
+  return ds + 0.0053 * sin(M) - 0.0069 * sin(2 * L);
+}
+function hourAngle(h, phi, d) {
+  return acos((sin(h) - sin(phi) * sin(d)) / (cos(phi) * cos(d)));
+}
+function observerAngle(height) {
+  return -2.076 * Math.sqrt(height) / 60;
+}
+function getSetJ(h, lw, phi, dec, n, M, L) {
+  const w = hourAngle(h, phi, dec);
+  const a = approxTransit(w, lw, n);
+  return solarTransitJ(a, M, L);
+}
+
+function getSunTimes(date, lat, lon) {
+  const lw = RAD * -lon;
+  const phi = RAD * lat;
+  const dh = observerAngle(0);
+  const d = toDays(date);
+  const n = julianCycle(d, lw);
+  const ds = approxTransit(0, lw, n);
+  const M = solarMeanAnomaly(ds);
+  const L = eclipticLongitude(M);
+  const dec = declination(L, 0);
+  const Jnoon = solarTransitJ(ds, M, L);
+  const h = RAD * (-0.833 + dh);
+  const Jset = getSetJ(h, lw, phi, dec, n, M, L);
+  const Jrise = Jnoon - (Jset - Jnoon);
+  const riseH = ((Jrise + 0.5) % 1) * 24;
+  const setH = ((Jset + 0.5) % 1) * 24;
+  return { rise: riseH, set: setH };
+}
+
+function getMoonTimes(date, lat, lon) {
+  const lw = RAD * -lon;
+  const phi = RAD * lat;
+  const base = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const alts = [];
+  for (let m = 0; m < 288; m++) {
+    const dt = new Date(base.getTime() + m * 10 * 60000);
+    const d = toDays(dt);
+    const mc = moonCoords(d);
+    const H = siderealTime(d, lw) - mc.ra;
+    const alt = asin(sin(phi) * sin(mc.dec) + cos(phi) * cos(mc.dec) * cos(H));
+    alts.push({ jd: toJulian(dt), alt, hour: dt.getUTCHours() + dt.getUTCMinutes()/60 });
   }
-  times.sort((a,b)=>a.time-b.time);
-  const res={rise:null,set:null,upper:null,lower:null};
-  for(const t of times){
-    if(t.type==='rise'&&!res.rise)res.rise=t;
-    if(t.type==='set'&&!res.set)res.set=t;
-    if(t.type==='upper'&&!res.upper)res.upper=t;
-    if(t.type==='upper'&&res.upper&&!res.lower)res.lower={time:t.time+12.42,jd:t.jd+12.42/24};
+  let rise = null, set = null, upper = null, lower = null;
+  let maxAlt = -99, minAlt = 99;
+  for (let i = 0; i < alts.length - 1; i++) {
+    if (alts[i].alt < 0 && alts[i+1].alt >= 0) {
+      const t = alts[i].jd + Math.abs(alts[i].alt) / (Math.abs(alts[i].alt) + Math.abs(alts[i+1].alt)) * (alts[i+1].jd - alts[i].jd);
+      rise = ((t + 0.5) % 1) * 24;
+    }
+    if (alts[i].alt >= 0 && alts[i+1].alt < 0) {
+      const t = alts[i].jd + Math.abs(alts[i].alt) / (Math.abs(alts[i].alt) + Math.abs(alts[i+1].alt)) * (alts[i+1].jd - alts[i].jd);
+      set = ((t + 0.5) % 1) * 24;
+    }
+    if (alts[i].alt > maxAlt) { maxAlt = alts[i].alt; upper = alts[i].hour; }
+    if (alts[i].alt < minAlt) { minAlt = alts[i].alt; lower = alts[i].hour; }
   }
-  if(res.upper&&!res.lower)res.lower={time:res.upper.time+12.42,jd:res.upper.jd+12.42/24};
-  return res;
-}
-function getSunTimes(date,lat,lon){
-  const jd=toJulian(date),sp=sunPosition(jd),h0=-.01454;
-  const r=riseSetTransit(jd,lat*Math.PI/180,lon*Math.PI/180,sp.dec,sp.ra,h0);
-  const jd0=Math.floor(jd)-.5;
-  return{rise:{time:r.rise,jd:jd0+r.rise/24},set:{time:r.set,jd:jd0+r.set/24}};
-}
-function getMoonPhase(jd){
-  const T=(jd-2451545)/36525,D=((297.850+445267.112*T)%360)*Math.PI/180,M=((134.963+477198.867*T)%360)*Math.PI/180,Mp=((218.316+481267.881*T)%360)*Math.PI/180;
-  const elong=180-D*180/Math.PI-6.289*Math.sin(Mp)+2.1*Math.sin(M)+1.274*Math.sin(2*D-Mp)+.658*Math.sin(2*D);
-  return(1-Math.cos(elong*Math.PI/180))/2;
+  if (rise === null) rise = upper ? (upper - 6) % 24 : 0;
+  if (set === null) set = upper ? (upper + 6) % 24 : 12;
+  if (upper === null) upper = 0;
+  if (lower === null) lower = (upper + 12.42) % 24;
+  return { rise, set, upper, lower };
 }
 
-/* ---------- SOLUNAR MODEL ---------- */
-function computeSolunar(date,lat,lon){
-  const moon=getMoonTimes(date,lat,lon),sun=getSunTimes(date,lat,lon);
-  const jd=toJulian(date),phase=getMoonPhase(jd);
-  // FIX: max at new/full moon (phase 0 or 1), min at quarters (0.5)
-  const kPhase=1.2-.4*Math.abs(Math.sin(phase*Math.PI));
+function getMoonPhase(jd) {
+  const T = (jd - 2451545.0) / 36525;
+  const D = ((297.850 + 445267.112 * T) % 360) * RAD;
+  const M = ((134.963 + 477198.867 * T) % 360) * RAD;
+  const Mp = ((218.316 + 481267.881 * T) % 360) * RAD;
+  const elong = 180 - D * 180/PI - 6.289 * sin(Mp) + 2.100 * sin(M) + 1.274 * sin(2*D - Mp) + 0.658 * sin(2*D);
+  return (1 - cos(elong * RAD)) / 2;
+}
 
-  const periods=[];
-  if(moon.upper)periods.push({start:moon.upper.time-1,end:moon.upper.time+1,amp:40,type:'big'});
-  if(moon.lower)periods.push({start:moon.lower.time-1,end:moon.lower.time+1,amp:40,type:'big'});
-  if(moon.rise)periods.push({start:moon.rise.time-.5,end:moon.rise.time+.5,amp:25,type:'small'});
-  if(moon.set)periods.push({start:moon.set.time-.5,end:moon.set.time+.5,amp:25,type:'small'});
+// ==================== SOLUNAR MODEL ====================
+function computeSolunar(date, lat, lon) {
+  const moon = getMoonTimes(date, lat, lon);
+  const sun = getSunTimes(date, lat, lon);
+  const jd = toJulian(date);
+  const phase = getMoonPhase(jd);
+  const kPhase = K_PHASE_MAX - (K_PHASE_MAX - K_PHASE_MIN) * Math.abs(sin(phase * PI));
 
-  const overlapWindow=1.0;
-  for(const p of periods){
-    const center=p.start+(p.end-p.start)/2;
-    const nearSunrise=Math.abs(center-sun.rise.time)<=overlapWindow;
-    const nearSunset=Math.abs(center-sun.set.time)<=overlapWindow;
-    // FIX: (1 + Bonus_overlap) => multiplier = 2.0 when overlapping
-    p.super=(nearSunrise||nearSunset)?2.0:1.0;
+  const periods = [];
+  if (moon.upper !== null) periods.push({ start: moon.upper - 1, end: moon.upper + 1, amp: AMP_BIG, type: 'big', name: 'БП' });
+  if (moon.lower !== null) periods.push({ start: moon.lower - 1, end: moon.lower + 1, amp: AMP_BIG, type: 'big', name: 'БП' });
+  if (moon.rise !== null) periods.push({ start: moon.rise - 0.5, end: moon.rise + 0.5, amp: AMP_SMALL, type: 'small', name: 'МП' });
+  if (moon.set !== null) periods.push({ start: moon.set - 0.5, end: moon.set + 0.5, amp: AMP_SMALL, type: 'small', name: 'МП' });
+
+  for (const p of periods) {
+    const center = p.start + (p.end - p.start) / 2;
+    const nearSunrise = Math.abs(center - sun.rise) <= OVERLAP_WINDOW;
+    const nearSunset = Math.abs(center - sun.set) <= OVERLAP_WINDOW;
+    p.super = (nearSunrise || nearSunset) ? 2.0 : 1.0;
   }
 
-  const hourly=[];
-  for(let h=0;h<24;h++){
-    let score=15;
-    for(const p of periods){
-      if(h>=p.start&&h<=p.end){
-        const center=(p.start+p.end)/2;
-        const dist=Math.abs(h+.5-center);
-        const peak=p.amp*Math.max(0,1-dist/((p.end-p.start)/2));
-        score+=peak*kPhase*p.super;
+  const hourly = [];
+  for (let h = 0; h < 24; h++) {
+    let score = BASE_SCORE;
+    for (const p of periods) {
+      if (h >= p.start && h <= p.end) {
+        const center = (p.start + p.end) / 2;
+        const dist = Math.abs(h + 0.5 - center);
+        const peak = p.amp * Math.max(0, 1 - dist / ((p.end - p.start) / 2));
+        score += peak * kPhase * p.super;
       }
     }
-    hourly.push(Math.min(100,Math.max(0,score)));
+    hourly.push(Math.min(100, Math.max(0, score)));
   }
-  return{hourly,moon,sun,phase,kPhase,periods};
+  return { hourly, moon, sun, phase, kPhase, periods };
 }
 
-/* ---------- WEATHER ---------- */
-async function fetchWithTimeout(url,ms=10000){
-  const c=new AbortController();
-  const t=setTimeout(()=>c.abort(),ms);
-  try{const r=await fetch(url,{signal:c.signal});clearTimeout(t);return r}catch(e){clearTimeout(t);throw e}
+// ==================== WEATHER ====================
+async function fetchWithTimeout(url, ms = 10000) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), ms);
+  try { const r = await fetch(url, { signal: c.signal }); clearTimeout(t); return r; }
+  catch (e) { clearTimeout(t); throw e; }
 }
-async function fetchWeather(lat,lon){
-  const url='https://api.open-meteo.com/v1/forecast?latitude='+lat+'&longitude='+lon+'&hourly=temperature_2m,pressure_msl,cloud_cover,precipitation,weather_code,wind_speed_10m&daily=sunrise,sunset&timezone=auto&forecast_days=5';
-  const r=await fetchWithTimeout(url);
-  if(!r.ok)throw new Error('Weather API: '+r.status);
+async function fetchWeather(lat, lon) {
+  const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lon +
+    '&hourly=temperature_2m,pressure_msl,cloud_cover,precipitation,weather_code,wind_speed_10m' +
+    '&daily=sunrise,sunset&timezone=auto&forecast_days=5';
+  const r = await fetchWithTimeout(url);
+  if (!r.ok) throw new Error('Weather API: ' + r.status);
   return r.json();
 }
-function getSeasonCoeff(){
-  const m=new Date().getMonth();
-  if(m>=2&&m<=4)return 1.15;
-  if(m>=5&&m<=7)return.85;
-  if(m>=8&&m<=9)return 1.15;
-  return.7;
+function getSeasonCoeff() {
+  const m = new Date().getMonth();
+  if (m >= 2 && m <= 4) return 1.15;
+  if (m >= 5 && m <= 7) return 0.85;
+  if (m >= 8 && m <= 9) return 1.15;
+  return 0.70;
 }
-function getWeatherMod(hourIdx,data,dayOffset,solunar){
-  const p=data.hourly.pressure_msl,t=data.hourly.temperature_2m,w=data.hourly.wind_speed_10m,c=data.hourly.cloud_cover,pr=data.hourly.precipitation,wc=data.hourly.weather_code;
-  const base=dayOffset*24;
-  const i=Math.min(base+hourIdx,p.length-1);
-  const i3=Math.max(0,i-3);
+function getWeatherMod(hourIdx, data, dayOffset, solunar) {
+  const p = data.hourly.pressure_msl, w = data.hourly.wind_speed_10m;
+  const c = data.hourly.cloud_cover, pr = data.hourly.precipitation, wc = data.hourly.weather_code;
+  const t = data.hourly.temperature_2m;
+  const base = dayOffset * 24;
+  const i = Math.min(base + hourIdx, p.length - 1);
+  const i3 = Math.max(0, i - 3);
 
-  let mod=1.0;
+  let mod = 1.0;
+  const dp = (p[i] - p[i3]) / 1.33322;
+  if (dp >= -1 && dp <= 1) mod *= 1.05;
+  else if (dp >= -3 && dp < -1) mod *= 1.10;
+  else if (dp < -3) mod *= 1.18;
+  else if (dp > 1 && dp <= 3) mod *= 0.95;
+  else if (dp > 3) mod *= 0.80;
 
-  // FIX: convert hPa delta to mmHg (1 mmHg = 1.333 hPa)
-  const dp=(p[i]-p[i3])/1.33322;
-  if(dp>=-1&&dp<=1)mod*=1.05;
-  else if(dp>=-3&&dp<-1)mod*=1.10;
-  else if(dp<-3)mod*=1.18;
-  else if(dp>1&&dp<=3)mod*=.95;
-  else if(dp>3)mod*=.80;
+  if (w[i] >= 10) mod *= 0.80;
+  else if (w[i] <= 5) mod *= 1.05;
 
-  if(w[i]>=10)mod*=.80;
-  else if(w[i]<=5)mod*=1.05;
+  const code = wc[i];
+  if (code >= 95) mod *= 0.65;
+  else if (pr[i] > 0 && pr[i] < 2.5) mod *= 1.08;
+  else if (pr[i] >= 2.5) mod *= 0.90;
 
-  const code=wc[i];
-  if(code>=95)mod*=.65;
-  else if(pr[i]>0&&pr[i]<2.5)mod*=1.08;
-
-  const h=hourIdx,sr=solunar.sun.rise.time,ss=solunar.sun.set.time;
-  if(h>=sr&&h<=ss){
-    if(c[i]>80)mod*=1.10;
-    else if(c[i]>30)mod*=1.05;
+  const h = hourIdx, sr = solunar.sun.rise, ss = solunar.sun.set;
+  const isDay = h >= sr && h <= ss;
+  if (isDay) {
+    if (c[i] > 80) mod *= 1.10;
+    else if (c[i] > 30) mod *= 1.05;
   }
 
-  // FIX: temperature swing >5°C per 24h
-  const i24=Math.max(0,i-24);
-  if(Math.abs(t[i]-t[i24])>5)mod*=.85;
+  const i24 = Math.max(0, i - 24);
+  if (Math.abs(t[i] - t[i24]) > 5) mod *= 0.85;
 
-  // Clamp weather modifier per methodology [0.5, 1.3]
-  return Math.max(.5,Math.min(1.3,mod));
+  return Math.max(0.5, Math.min(1.3, mod));
 }
-function computeForecast(date,lat,lon,wdata){
-  const sol=computeSolunar(date,lat,lon);
-  const dayOffset=Math.floor((date-new Date(wdata.hourly.time[0]))/864e5);
-  const kSeason=getSeasonCoeff();
-  const hourly=sol.hourly.map((s,h)=>Math.min(100,s*getWeatherMod(h,wdata,dayOffset,sol)*kSeason));
+function computeForecast(date, lat, lon, wdata) {
+  const sol = computeSolunar(date, lat, lon);
+  const dayOffset = Math.floor((date - new Date(wdata.hourly.time[0])) / 86400000);
+  const kSeason = getSeasonCoeff();
+  const hourly = sol.hourly.map((s, h) => Math.min(100, s * getWeatherMod(h, wdata, dayOffset, sol) * kSeason));
 
-  const now=new Date(),currentHour=now.getHours();
-  const currentScore=hourly[currentHour]||hourly[0];
+  const now = new Date(), currentHour = now.getHours();
+  const currentScore = hourly[currentHour] || hourly[0];
 
-  const slots=[];
-  for(let h=0;h<24;h++)slots.push({hour:h,score:hourly[h]});
-  slots.sort((a,b)=>b.score-a.score);
+  const slots = [];
+  for (let h = 0; h < 24; h++) slots.push({ hour: h, score: hourly[h] });
+  slots.sort((a, b) => b.score - a.score);
 
-  const topSlots=slots.slice(0,3).map((s,i)=>{const e=(s.hour+3)%24;return{rank:i+1,start:s.hour,end:e,score:Math.round(s.score),peakHour:s.hour}});
-  return{solunar:sol,hourly,currentScore,topSlots,date};
+  const topSlots = slots.slice(0, 3).map((s, i) => {
+    const end = (s.hour + 3) % 24;
+    return { rank: i + 1, start: s.hour, end, score: Math.round(s.score), peakHour: s.hour };
+  });
+
+  return { solunar: sol, hourly, currentScore, topSlots, date };
 }
 
-/* ---------- UI ---------- */
-function showToast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000)}
-function setLoading(txt,on){$('loadingText').textContent=txt;if(on)$('loading').classList.add('active');else $('loading').classList.remove('active')}
-function category(s){if(s>=75)return{label:'Отличный',cls:'cat-excellent'};if(s>=50)return{label:'Хороший',cls:'cat-good'};if(s>=25)return{label:'Средний',cls:'cat-average'};return{label:'Слабый',cls:'cat-poor'}}
-function formatTime(h){return String(h).padStart(2,'0')+':00'}
-function formatRange(s,e){return formatTime(s)+' – '+formatTime(e)}
+// ==================== UI ====================
+function showToast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); }
+function setLoading(txt, on) { $('loadingText').textContent = txt; if (on) $('loading').classList.add('active'); else $('loading').classList.remove('active'); }
+function category(s) { if (s >= 75) return { label: 'Отличный', cls: 'cat-excellent' }; if (s >= 50) return { label: 'Хороший', cls: 'cat-good' }; if (s >= 25) return { label: 'Средний', cls: 'cat-average' }; return { label: 'Слабый', cls: 'cat-poor' }; }
+function formatTime(h) { return String(h).padStart(2, '0') + ':00'; }
+function formatRange(s, e) { return formatTime(s) + ' – ' + formatTime(e); }
 
-function renderMain(forecast){
-  const score=Math.round(forecast.currentScore),cat=category(score);
-  $('bitePercent').textContent=score+'%';
-  $('biteCategory').textContent=cat.label;
-  $('biteCategory').className='bite-category '+cat.cls;
-  const circ=2*Math.PI*90,off=circ-(score/100)*circ;
-  setTimeout(()=>{$('biteRingFill').style.strokeDashoffset=off},100);
+function renderMain(forecast) {
+  const score = Math.round(forecast.currentScore), cat = category(score);
+  $('bitePercent').textContent = score + '%';
+  $('biteCategory').textContent = cat.label;
+  $('biteCategory').className = 'bite-category ' + cat.cls;
+  const circ = 2 * PI * 90, off = circ - (score / 100) * circ;
+  setTimeout(() => { $('biteRingFill').style.strokeDashoffset = off; }, 100);
 
-  const w=weatherData,base=selectedDay*24,wi=Math.min(base+new Date().getHours(),w.hourly.pressure_msl.length-1);
-  $('weatherStrip').innerHTML='<div class="weather-item"><div class="label">Давление</div><div class="value">'+Math.round(w.hourly.pressure_msl[wi])+' гПа</div></div><div class="weather-item"><div class="label">Температура</div><div class="value">'+Math.round(w.hourly.temperature_2m[wi])+'°C</div></div><div class="weather-item"><div class="label">Ветер</div><div class="value">'+Math.round(w.hourly.wind_speed_10m[wi])+' м/с</div></div><div class="weather-item"><div class="label">Облачность</div><div class="value">'+w.hourly.cloud_cover[wi]+'%</div></div>';
+  const w = weatherData, base = selectedDay * 24;
+  const wi = Math.min(base + new Date().getHours(), w.hourly.pressure_msl.length - 1);
+  $('weatherStrip').innerHTML =
+    '<div class="weather-item"><div class="label">Давление</div><div class="value">' + Math.round(w.hourly.pressure_msl[wi]) + ' гПа</div></div>' +
+    '<div class="weather-item"><div class="label">Температура</div><div class="value">' + Math.round(w.hourly.temperature_2m[wi]) + '°C</div></div>' +
+    '<div class="weather-item"><div class="label">Ветер</div><div class="value">' + Math.round(w.hourly.wind_speed_10m[wi]) + ' м/с</div></div>' +
+    '<div class="weather-item"><div class="label">Облачность</div><div class="value">' + w.hourly.cloud_cover[wi] + '%</div></div>';
 
-  $('slots').innerHTML=forecast.topSlots.map(s=>{
-    const c=category(s.score),col=s.score>=75?'#00d4aa':s.score>=50?'#4facfe':s.score>=25?'#ffd166':'#ff6b6b';
-    return'<div class="slot-card"><div class="slot-rank rank-'+s.rank+'">'+s.rank+'</div><div class="slot-info"><div class="slot-time">'+formatRange(s.start,s.end)+'</div><div class="slot-detail">Пик в '+formatTime(s.peakHour)+'</div></div><div class="slot-score"><div class="slot-score-val" style="color:'+col+'">'+s.score+'%</div><div class="slot-score-label">'+c.label+'</div></div></div>';
+  $('slots').innerHTML = forecast.topSlots.map(s => {
+    const c = category(s.score), col = s.score >= 75 ? '#00d4aa' : s.score >= 50 ? '#4facfe' : s.score >= 25 ? '#ffd166' : '#ff6b6b';
+    return '<div class="slot-card"><div class="slot-rank rank-' + s.rank + '">' + s.rank + '</div><div class="slot-info"><div class="slot-time">' + formatRange(s.start, s.end) + '</div><div class="slot-detail">Пик в ' + formatTime(s.peakHour) + '</div></div><div class="slot-score"><div class="slot-score-val" style="color:' + col + '">' + s.score + '%</div><div class="slot-score-label">' + c.label + '</div></div></div>';
   }).join('');
 
   drawChart(forecast.hourly);
   renderDayPicker();
   renderHourlyList(forecast.hourly);
-  $('content').style.display='block';
+  $('content').style.display = 'block';
 }
 
-function drawChart(hourly){
-  const canvas=$('hourChart'),dpr=window.devicePixelRatio||1,rect=canvas.getBoundingClientRect();
-  if(!rect.width)return;
-  canvas.width=rect.width*dpr;canvas.height=rect.height*dpr;
-  const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
-  const w=rect.width,h=rect.height,pad={top:20,right:10,bottom:30,left:10},cw=w-pad.left-pad.right,ch=h-pad.top-pad.bottom;
-  ctx.clearRect(0,0,w,h);
-  const grad=ctx.createLinearGradient(0,pad.top,0,h-pad.bottom);
-  grad.addColorStop(0,'rgba(0,212,170,0.25)');grad.addColorStop(1,'rgba(0,212,170,0.0)');
-  ctx.beginPath();ctx.moveTo(pad.left,h-pad.bottom);
-  for(let i=0;i<24;i++){const x=pad.left+(i/23)*cw,y=pad.top+(1-hourly[i]/100)*ch;if(i===0)ctx.lineTo(x,y);else{const px=pad.left+((i-1)/23)*cw,py=pad.top+(1-hourly[i-1]/100)*ch,cx=(px+x)/2;ctx.bezierCurveTo(cx,py,cx,y,x,y)}}
-  ctx.lineTo(pad.left+cw,h-pad.bottom);ctx.closePath();ctx.fillStyle=grad;ctx.fill();
+function drawChart(hourly) {
+  const canvas = $('hourChart'), dpr = window.devicePixelRatio || 1, rect = canvas.getBoundingClientRect();
+  if (!rect.width) return;
+  canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+  const w = rect.width, h = rect.height, pad = { top: 20, right: 10, bottom: 30, left: 10 };
+  const cw = w - pad.left - pad.right, ch = h - pad.top - pad.bottom;
+  ctx.clearRect(0, 0, w, h);
+  const grad = ctx.createLinearGradient(0, pad.top, 0, h - pad.bottom);
+  grad.addColorStop(0, 'rgba(0,212,170,0.25)'); grad.addColorStop(1, 'rgba(0,212,170,0.0)');
+  ctx.beginPath(); ctx.moveTo(pad.left, h - pad.bottom);
+  for (let i = 0; i < 24; i++) {
+    const x = pad.left + (i / 23) * cw, y = pad.top + (1 - hourly[i] / 100) * ch;
+    if (i === 0) ctx.lineTo(x, y); else { const px = pad.left + ((i - 1) / 23) * cw, py = pad.top + (1 - hourly[i - 1] / 100) * ch, cx = (px + x) / 2; ctx.bezierCurveTo(cx, py, cx, y, x, y); }
+  }
+  ctx.lineTo(pad.left + cw, h - pad.bottom); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
   ctx.beginPath();
-  for(let i=0;i<24;i++){const x=pad.left+(i/23)*cw,y=pad.top+(1-hourly[i]/100)*ch;if(i===0)ctx.moveTo(x,y);else{const px=pad.left+((i-1)/23)*cw,py=pad.top+(1-hourly[i-1]/100)*ch,cx=(px+x)/2;ctx.bezierCurveTo(cx,py,cx,y,x,y)}}
-  ctx.strokeStyle='#00d4aa';ctx.lineWidth=2.5;ctx.stroke();
-  for(let i=0;i<24;i+=4){const x=pad.left+(i/23)*cw,y=pad.top+(1-hourly[i]/100)*ch;ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fillStyle='#0a1929';ctx.fill();ctx.strokeStyle='#00d4aa';ctx.lineWidth=2;ctx.stroke()}
-  ctx.fillStyle='#8a9bb0';ctx.font='11px sans-serif';ctx.textAlign='center';
-  for(let i=0;i<24;i+=4){const x=pad.left+(i/23)*cw;ctx.fillText(formatTime(i),x,h-8)}
+  for (let i = 0; i < 24; i++) {
+    const x = pad.left + (i / 23) * cw, y = pad.top + (1 - hourly[i] / 100) * ch;
+    if (i === 0) ctx.moveTo(x, y); else { const px = pad.left + ((i - 1) / 23) * cw, py = pad.top + (1 - hourly[i - 1] / 100) * ch, cx = (px + x) / 2; ctx.bezierCurveTo(cx, py, cx, y, x, y); }
+  }
+  ctx.strokeStyle = '#00d4aa'; ctx.lineWidth = 2.5; ctx.stroke();
+  for (let i = 0; i < 24; i += 4) {
+    const x = pad.left + (i / 23) * cw, y = pad.top + (1 - hourly[i] / 100) * ch;
+    ctx.beginPath(); ctx.arc(x, y, 3, 0, PI * 2); ctx.fillStyle = '#0a1929'; ctx.fill(); ctx.strokeStyle = '#00d4aa'; ctx.lineWidth = 2; ctx.stroke();
+  }
+  ctx.fillStyle = '#8a9bb0'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+  for (let i = 0; i < 24; i += 4) { const x = pad.left + (i / 23) * cw; ctx.fillText(formatTime(i), x, h - 8); }
 }
 
-function renderDayPicker(){
-  const days=['Вс','Пн','Вт','Ср','Чт','Пт','Сб'],today=new Date();let html='';
-  for(let d=0;d<5;d++){const date=new Date(today);date.setDate(today.getDate()+d);const act=d===selectedDay?'active':'';html+='<button class="day-btn '+act+'" data-day="'+d+'"><div class="dow">'+days[date.getDay()]+'</div><div class="dom">'+date.getDate()+'</div></button>'}
-  $('dayPicker').innerHTML=html;
-  document.querySelectorAll('.day-btn').forEach(btn=>{btn.addEventListener('click',()=>{selectedDay=parseInt(btn.dataset.day);updateForecast()})});
+function renderDayPicker() {
+  const days = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'], today = new Date(); let html = '';
+  for (let d = 0; d < 5; d++) { const date = new Date(today); date.setDate(today.getDate() + d); const act = d === selectedDay ? 'active' : ''; html += '<button class="day-btn ' + act + '" data-day="' + d + '"><div class="dow">' + days[date.getDay()] + '</div><div class="dom">' + date.getDate() + '</div></button>'; }
+  $('dayPicker').innerHTML = html;
+  document.querySelectorAll('.day-btn').forEach(btn => { btn.addEventListener('click', () => { selectedDay = parseInt(btn.dataset.day); updateForecast(); }); });
 }
-function renderHourlyList(hourly){
-  const now=new Date().getHours();
-  $('hourlyList').innerHTML=hourly.map((score,h)=>{const isNow=h===now&&selectedDay===0,col=score>=75?'#00d4aa':score>=50?'#4facfe':score>=25?'#ffd166':'#ff6b6b';return'<div class="hour-row"><div class="hour-time">'+(isNow?'<b>Сейчас</b>':formatTime(h))+'</div><div class="hour-bar-wrap"><div class="hour-bar" style="width:'+score+'%;background:'+col+'"></div></div><div class="hour-score" style="color:'+col+'">'+Math.round(score)+'%</div></div>'}).join('');
+function renderHourlyList(hourly) {
+  const now = new Date().getHours();
+  $('hourlyList').innerHTML = hourly.map((score, h) => {
+    const isNow = h === now && selectedDay === 0, col = score >= 75 ? '#00d4aa' : score >= 50 ? '#4facfe' : score >= 25 ? '#ffd166' : '#ff6b6b';
+    return '<div class="hour-row"><div class="hour-time">' + (isNow ? '<b>Сейчас</b>' : formatTime(h)) + '</div><div class="hour-bar-wrap"><div class="hour-bar" style="width:' + score + '%;background:' + col + '"></div></div><div class="hour-score" style="color:' + col + '">' + Math.round(score) + '%</div></div>';
+  }).join('');
 }
 
-/* ---------- GEOCODING ---------- */
-async function searchCities(q){if(q.length<2)return[];const url='https://geocoding-api.open-meteo.com/v1/search?name='+encodeURIComponent(q)+'&count=5&language=ru';const r=await fetchWithTimeout(url);const d=await r.json();return d.results||[]}
-function showAutocomplete(results){
-  const el=$('autocomplete');if(!results.length){el.classList.remove('open');return}
-  el.innerHTML=results.map(r=>{const region=[r.admin1,r.country].filter(Boolean).join(', ');return'<div class="autocomplete-item" data-lat="'+r.latitude+'" data-lon="'+r.longitude+'" data-name="'+r.name+'"><div class="name">'+r.name+'</div><div class="meta">'+region+'</div></div>'}).join('');
+// ==================== GEOCODING ====================
+async function searchCities(q) { if (q.length < 2) return []; const url = 'https://geocoding-api.open-meteo.com/v1/search?name=' + encodeURIComponent(q) + '&count=5&language=ru'; const r = await fetchWithTimeout(url); const d = await r.json(); return d.results || []; }
+function showAutocomplete(results) {
+  const el = $('autocomplete'); if (!results.length) { el.classList.remove('open'); return; }
+  el.innerHTML = results.map(r => { const region = [r.admin1, r.country].filter(Boolean).join(', '); return '<div class="autocomplete-item" data-lat="' + r.latitude + '" data-lon="' + r.longitude + '" data-name="' + r.name + '"><div class="name">' + r.name + '</div><div class="meta">' + region + '</div></div>'; }).join('');
   el.classList.add('open');
-  el.querySelectorAll('.autocomplete-item').forEach(item=>{item.addEventListener('click',()=>{selectCity(item.dataset.name,parseFloat(item.dataset.lat),parseFloat(item.dataset.lon));el.classList.remove('open')})});
+  el.querySelectorAll('.autocomplete-item').forEach(item => { item.addEventListener('click', () => { selectCity(item.dataset.name, parseFloat(item.dataset.lat), parseFloat(item.dataset.lon)); el.classList.remove('open'); }); });
 }
-function selectCity(name,lat,lon){
-  currentCity=name;currentLat=lat;currentLon=lon;$('cityInput').value=name;$('locationChip').style.display='inline-flex';$('locationChip').textContent=name;
-  weatherData=null;selectedDay=0;updateForecast();
+function selectCity(name, lat, lon) {
+  currentCity = name; currentLat = lat; currentLon = lon; $('cityInput').value = name; $('locationChip').style.display = 'inline-flex'; $('locationChip').textContent = name;
+  weatherData = null; selectedDay = 0; updateForecast();
 }
-async function updateForecast(){
-  setLoading('Расчёт прогноза...',true);
-  try{
-    if(!weatherData)weatherData=await fetchWeather(currentLat,currentLon);
-    const date=new Date();date.setDate(date.getDate()+selectedDay);
-    const forecast=computeForecast(date,currentLat,currentLon,weatherData);
+async function updateForecast() {
+  setLoading('Расчёт прогноза...', true);
+  try {
+    if (!weatherData) weatherData = await fetchWeather(currentLat, currentLon);
+    const date = new Date(); date.setDate(date.getDate() + selectedDay);
+    const forecast = computeForecast(date, currentLat, currentLon, weatherData);
     renderMain(forecast);
-  }catch(e){console.error(e);showToast('Ошибка: '+(e.message||'Не удалось загрузить прогноз'))}
-  finally{setLoading('',false)}
+  } catch (e) { console.error(e); showToast('Ошибка: ' + (e.message || 'Не удалось загрузить прогноз')); }
+  finally { setLoading('', false); }
 }
 
-/* ---------- EVENTS ---------- */
-$('cityInput').addEventListener('input',e=>{clearTimeout(debounceTimer);const val=e.target.value.trim();if(!val){$('autocomplete').classList.remove('open');return}debounceTimer=setTimeout(async()=>{try{const r=await searchCities(val);showAutocomplete(r)}catch(e){console.error(e)}},300)});
-$('cityInput').addEventListener('keydown',e=>{if(e.key==='Enter'){$('autocomplete').classList.remove('open');const val=e.target.value.trim();if(val)searchCities(val).then(r=>{if(r[0])selectCity(r[0].name,r[0].latitude,r[0].longitude)})}});
-$('searchBtn').addEventListener('click',()=>{const val=$('cityInput').value.trim();if(val)searchCities(val).then(r=>{if(r[0])selectCity(r[0].name,r[0].latitude,r[0].longitude)})});
-$('geoBtn').addEventListener('click',()=>{if(!navigator.geolocation){showToast('Геолокация не поддерживается');return}setLoading('Определение местоположения...',true);navigator.geolocation.getCurrentPosition(async pos=>{currentLat=pos.coords.latitude;currentLon=pos.coords.longitude;try{const r=await fetchWithTimeout('https://geocoding-api.open-meteo.com/v1/search?name='+currentLat+','+currentLon+'&count=1');const d=await r.json();currentCity=(d.results&&d.results[0])?d.results[0].name:'Моё местоположение'}catch{currentCity='Моё местоположение'}$('cityInput').value=currentCity;weatherData=null;selectedDay=0;await updateForecast()},err=>{setLoading('',false);showToast('Не удалось получить геолокацию')})});
-document.addEventListener('click',e=>{if(!e.target.closest('.search-box'))$('autocomplete').classList.remove('open')});
-window.addEventListener('resize',()=>{if(weatherData){const date=new Date();date.setDate(date.getDate()+selectedDay);const f=computeForecast(date,currentLat,currentLon,weatherData);drawChart(f.hourly)}});
+// ==================== EVENTS ====================
+$('cityInput').addEventListener('input', e => { clearTimeout(debounceTimer); const val = e.target.value.trim(); if (!val) { $('autocomplete').classList.remove('open'); return; } debounceTimer = setTimeout(async () => { try { const r = await searchCities(val); showAutocomplete(r); } catch (e) { console.error(e); } }, 300); });
+$('cityInput').addEventListener('keydown', e => { if (e.key === 'Enter') { $('autocomplete').classList.remove('open'); const val = e.target.value.trim(); if (val) searchCities(val).then(r => { if (r[0]) selectCity(r[0].name, r[0].latitude, r[0].longitude); }); } });
+$('searchBtn').addEventListener('click', () => { const val = $('cityInput').value.trim(); if (val) searchCities(val).then(r => { if (r[0]) selectCity(r[0].name, r[0].latitude, r[0].longitude); }); });
+$('geoBtn').addEventListener('click', () => { if (!navigator.geolocation) { showToast('Геолокация не поддерживается'); return; } setLoading('Определение местоположения...', true); navigator.geolocation.getCurrentPosition(async pos => { currentLat = pos.coords.latitude; currentLon = pos.coords.longitude; try { const r = await fetchWithTimeout('https://geocoding-api.open-meteo.com/v1/search?name=' + currentLat + ',' + currentLon + '&count=1'); const d = await r.json(); currentCity = (d.results && d.results[0]) ? d.results[0].name : 'Моё местоположение'; } catch { currentCity = 'Моё местоположение'; } $('cityInput').value = currentCity; weatherData = null; selectedDay = 0; await updateForecast(); }, err => { setLoading('', false); showToast('Не удалось получить геолокацию'); }); });
+document.addEventListener('click', e => { if (!e.target.closest('.search-box')) $('autocomplete').classList.remove('open'); });
+window.addEventListener('resize', () => { if (weatherData) { const date = new Date(); date.setDate(date.getDate() + selectedDay); const f = computeForecast(date, currentLat, currentLon, weatherData); drawChart(f.hourly); } });
 
-/* ---------- INIT ---------- */
-if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(console.error);
-$('cityInput').value=currentCity;selectCity(currentCity,currentLat,currentLon);
+// ==================== INIT ====================
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.error);
+$('cityInput').value = currentCity; selectCity(currentCity, currentLat, currentLon);
 </script>
 </body>
 </html>
